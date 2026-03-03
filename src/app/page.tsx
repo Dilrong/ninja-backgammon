@@ -67,6 +67,15 @@ const pipMap: Record<number, number[]> = {
   6: [1, 3, 4, 6, 7, 9],
 };
 
+function calcPipCount(state: GameState, player: Player): number {
+  let total = state.bar[player] * 25;
+  for (let i = 0; i < 24; i += 1) {
+    const distance = player === "white" ? i + 1 : 24 - i;
+    total += state.points[i][player] * distance;
+  }
+  return total;
+}
+
 function CheckerStack({
   count,
   tone,
@@ -428,6 +437,94 @@ export default function Home() {
 
     return () => clearTimeout(houseTurnTimer);
   }, [game.winner, game.pendingDouble, game.currentPlayer, playFx, triggerImpact]);
+
+  useEffect(() => {
+    if (game.winner || game.pendingDouble || game.currentPlayer !== "black") {
+      return;
+    }
+    if (game.dice.length > 0) {
+      return;
+    }
+    if (game.cubeMultiplier >= CUBE_MAX) {
+      return;
+    }
+    if (game.cubeOwner !== "center" && game.cubeOwner !== "black") {
+      return;
+    }
+
+    const whitePip = calcPipCount(game, "white");
+    const blackPip = calcPipCount(game, "black");
+    const advantage = whitePip - blackPip;
+    if (advantage < 14 || Math.random() > 0.45) {
+      return;
+    }
+
+    const cubeTimer = setTimeout(() => {
+      setGame((prev) => {
+        if (
+          prev.winner ||
+          prev.pendingDouble ||
+          prev.currentPlayer !== "black" ||
+          prev.dice.length > 0 ||
+          prev.cubeMultiplier >= CUBE_MAX ||
+          (prev.cubeOwner !== "center" && prev.cubeOwner !== "black")
+        ) {
+          return prev;
+        }
+        playFx("double");
+        triggerImpact("HOUSE DOUBLE");
+        return {
+          ...prev,
+          pendingDouble: {
+            from: "black",
+            timeLeft: DOUBLE_SECONDS,
+          },
+        };
+      });
+    }, 420);
+
+    return () => clearTimeout(cubeTimer);
+  }, [
+    game,
+    playFx,
+    triggerImpact,
+  ]);
+
+  useEffect(() => {
+    if (!game.pendingDouble || game.pendingDouble.from !== "white" || game.winner) {
+      return;
+    }
+
+    const decisionTimer = setTimeout(() => {
+      setGame((prev) => {
+        if (!prev.pendingDouble || prev.pendingDouble.from !== "white" || prev.winner) {
+          return prev;
+        }
+
+        const whitePip = calcPipCount(prev, "white");
+        const blackPip = calcPipCount(prev, "black");
+        const disadvantage = blackPip - whitePip;
+        const shouldDrop = disadvantage > 24 && prev.cubeMultiplier >= 4;
+
+        if (shouldDrop) {
+          playFx("win");
+          triggerImpact("HOUSE DROP");
+          return finalizeGame(prev, "white", "Drop");
+        }
+
+        playFx("double");
+        triggerImpact("HOUSE ACCEPT");
+        return {
+          ...prev,
+          pendingDouble: null,
+          cubeMultiplier: Math.min(prev.cubeMultiplier * 2, CUBE_MAX),
+          cubeOwner: "black",
+        };
+      });
+    }, 700);
+
+    return () => clearTimeout(decisionTimer);
+  }, [game.pendingDouble, game.winner, playFx, triggerImpact]);
 
   useEffect(() => {
     const timer = setInterval(() => {

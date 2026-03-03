@@ -412,7 +412,7 @@ export function runAutoTurn(state: GameState): GameState {
     if (legal.length === 0) {
       break;
     }
-    const selected = legal[Math.floor(Math.random() * legal.length)];
+    const selected = pickHeuristicMove(next, legal);
     next = applyMove(next, next.currentPlayer, selected);
     if (next.off[next.currentPlayer] === 15) {
       return finalizeGame(next, next.currentPlayer, "Bear Off");
@@ -420,6 +420,46 @@ export function runAutoTurn(state: GameState): GameState {
   }
 
   return endTurn(next);
+}
+
+function pickHeuristicMove(state: GameState, moves: Move[]): Move {
+  let best = moves[0];
+  let bestScore = Number.NEGATIVE_INFINITY;
+
+  for (const move of moves) {
+    let score = 0;
+
+    if (move.hit) {
+      score += 28;
+    }
+
+    if (move.to === "off") {
+      score += 34;
+    }
+
+    if (move.to !== "off") {
+      const currentPlayer = state.currentPlayer;
+      const point = state.points[move.to];
+      const ownCount = point[currentPlayer];
+      if (ownCount === 1) {
+        score += 12;
+      } else if (ownCount >= 2) {
+        score += 5;
+      }
+    }
+
+    if (move.from !== "bar" && move.to !== "off") {
+      const direction = state.currentPlayer === "white" ? -1 : 1;
+      score += (move.to - move.from) * direction * 1.5;
+    }
+
+    if (score > bestScore) {
+      best = move;
+      bestScore = score;
+    }
+  }
+
+  return best;
 }
 
 export function formatTime(seconds: number): string {
