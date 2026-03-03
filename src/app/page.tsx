@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
+  AiDifficulty,
   CUBE_MAX,
   DOUBLE_SECONDS,
   GameState,
@@ -161,6 +162,8 @@ export default function Home() {
   const [bgmVolume, setBgmVolume] = useState(0.34);
   const [bgmOn, setBgmOn] = useState(false);
   const [impactText, setImpactText] = useState<string>("");
+  const [coachHint, setCoachHint] = useState<string>("");
+  const [houseDifficulty, setHouseDifficulty] = useState<AiDifficulty>("normal");
   const submittedSettlementKey = useRef<string | null>(null);
   const bgmRef = useRef<HTMLAudioElement | null>(null);
   const rollTimerRefs = useRef<ReturnType<typeof setTimeout>[]>([]);
@@ -264,6 +267,32 @@ export default function Home() {
     });
     return picks;
   }, [candidateMoves]);
+
+  const suggestedMove = useMemo(() => {
+    if (!isPlayerTurn || legalMoves.length === 0) {
+      return null;
+    }
+
+    let best = legalMoves[0];
+    let score = Number.NEGATIVE_INFINITY;
+    for (const move of legalMoves) {
+      let nextScore = 0;
+      if (move.hit) {
+        nextScore += 20;
+      }
+      if (move.to === "off") {
+        nextScore += 30;
+      }
+      if (move.from !== "bar" && move.to !== "off") {
+        nextScore += (move.from - move.to) * 1.2;
+      }
+      if (nextScore > score) {
+        best = move;
+        score = nextScore;
+      }
+    }
+    return best;
+  }, [isPlayerTurn, legalMoves]);
 
   useEffect(() => {
     if (typeof window === "undefined") {
@@ -405,7 +434,7 @@ export default function Home() {
         }
         if (prev.turnTimeLeft <= 1) {
           setSelectedFrom(null);
-          const next = runAutoTurn(prev);
+          const next = runAutoTurn(prev, "normal");
           if (next !== prev) {
             playFx("roll");
           }
@@ -431,12 +460,12 @@ export default function Home() {
         if (prev.winner || prev.pendingDouble || prev.currentPlayer !== "black") {
           return prev;
         }
-        return runAutoTurn(prev);
+        return runAutoTurn(prev, houseDifficulty);
       });
     }, 550);
 
     return () => clearTimeout(houseTurnTimer);
-  }, [game.winner, game.pendingDouble, game.currentPlayer, playFx, triggerImpact]);
+  }, [game.winner, game.pendingDouble, game.currentPlayer, playFx, triggerImpact, houseDifficulty]);
 
   useEffect(() => {
     if (game.winner || game.pendingDouble || game.currentPlayer !== "black") {
@@ -697,6 +726,7 @@ export default function Home() {
           return;
         }
         setSelectedFrom(pointIndex);
+        setCoachHint("Select destination point to complete the move.");
       }
       return;
     }
@@ -704,6 +734,7 @@ export default function Home() {
     const direct = candidateMoves.find((move) => move.to === pointIndex);
     if (direct) {
       executeMove(direct);
+      setCoachHint("");
       return;
     }
 
@@ -722,6 +753,7 @@ export default function Home() {
         return;
       }
       setSelectedFrom((prev) => (prev === "bar" ? null : "bar"));
+      setCoachHint("Bar checker selected. Tap valid entry point.");
     }
   };
 
@@ -734,6 +766,7 @@ export default function Home() {
       const offMoves = legalMoves.filter((move) => move.to === "off");
       if (offMoves.length === 1) {
         executeMove(offMoves[0]);
+        setCoachHint("");
       }
       return;
     }
@@ -741,7 +774,18 @@ export default function Home() {
     const offMove = candidateMoves.find((move) => move.to === "off");
     if (offMove) {
       executeMove(offMove);
+      setCoachHint("");
     }
+  };
+
+  const suggestBestMove = () => {
+    if (!suggestedMove) {
+      setCoachHint("No suggestion available until dice are rolled.");
+      return;
+    }
+
+    setSelectedFrom(suggestedMove.from);
+    setCoachHint(`Suggested: ${moveLabel(suggestedMove)}`);
   };
 
   const rollCurrentPlayerDice = () => {
@@ -967,6 +1011,17 @@ export default function Home() {
               <p>Dice Queue: {game.dice.length > 0 ? game.dice.join(", ") : "(roll first)"}</p>
               <p>Cube Owner: {game.cubeOwner === "center" ? "CENTER" : game.cubeOwner.toUpperCase()}</p>
               <p className="hint-line">Move UX: source checker tap then destination point tap</p>
+              <label>
+                House Difficulty
+                <select
+                  value={houseDifficulty}
+                  onChange={(event) => setHouseDifficulty(event.target.value as AiDifficulty)}
+                >
+                  <option value="easy">Easy</option>
+                  <option value="normal">Normal</option>
+                  <option value="hard">Hard</option>
+                </select>
+              </label>
             </div>
 
             <div className="panel-box">
@@ -1050,6 +1105,15 @@ export default function Home() {
               >
                 Offer Double
               </button>
+              <button
+                type="button"
+                onClick={suggestBestMove}
+                disabled={Boolean(!isPlayerTurn || game.winner || game.pendingDouble || game.dice.length === 0)}
+              >
+                Suggest Move
+              </button>
+
+              {coachHint && <p className="coach-hint">{coachHint}</p>}
 
               {game.pendingDouble && (
                 <div className="double-box">
@@ -1206,6 +1270,9 @@ export default function Home() {
             </p>
             <p>
               Gross {game.winner.grossPayout.toFixed(2)} INJ - Fee ({(game.winner.feeRate * 100).toFixed(1)}%) {game.winner.feeAmount.toFixed(2)} = Net {game.winner.netPayout.toFixed(2)} INJ
+            </p>
+            <p>
+              Match Highlight: Pip W/B {calcPipCount(game, "white")} / {calcPipCount(game, "black")}
             </p>
             {game.winner.notes.map((note) => (
               <p key={note}>{note}</p>
