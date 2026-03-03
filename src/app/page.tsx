@@ -20,6 +20,7 @@ import {
   runAutoTurn,
   scoreWinnerByClock,
 } from "@/lib/game-engine";
+import { synth } from "@/lib/audio";
 
 type FromSelection = number | "bar" | null;
 
@@ -165,20 +166,44 @@ export default function Home() {
     tick: [],
   });
 
+  const [shakeType, setShakeType] = useState<"none" | "hit" | "double" | "win">("none");
+  const [isCharging, setIsCharging] = useState(false);
+
   const playFx = useCallback(
     (kind: SfxKind) => {
+      // Fallback or layer over existing wav files
       const list = sfxPool.current[kind];
-      if (list.length === 0) {
-        return;
+      if (list && list.length > 0) {
+        const source = list[Math.floor(Math.random() * list.length)];
+        const oneShot = source.cloneNode(true) as HTMLAudioElement;
+        oneShot.volume = sfxVolume;
+        if (kind !== "tick") {
+          oneShot.playbackRate = 0.96 + Math.random() * 0.1;
+        }
+        oneShot.currentTime = 0;
+        void oneShot.play().catch(() => undefined);
       }
-      const source = list[Math.floor(Math.random() * list.length)];
-      const oneShot = source.cloneNode(true) as HTMLAudioElement;
-      oneShot.volume = sfxVolume;
-      if (kind !== "tick") {
-        oneShot.playbackRate = 0.96 + Math.random() * 0.1;
+
+      // Add synth layers for dopamine effect
+      if (kind === "hit") {
+        synth.playHit();
+        setShakeType("hit");
+        setTimeout(() => setShakeType("none"), 400);
+      } else if (kind === "double") {
+        synth.playDouble();
+        setShakeType("double");
+        setTimeout(() => setShakeType("none"), 600);
+      } else if (kind === "win") {
+        synth.playWin();
+        setShakeType("win");
+        setTimeout(() => setShakeType("none"), 1500);
+      } else if (kind === "rollThrow") {
+        synth.playRollThrow();
+      } else if (kind === "rollStop") {
+        synth.playRollStop();
+      } else if (kind === "tick") {
+        synth.playTick();
       }
-      oneShot.currentTime = 0;
-      void oneShot.play().catch(() => undefined);
     },
     [sfxVolume],
   );
@@ -194,6 +219,8 @@ export default function Home() {
     setImpactText(text);
     setTimeout(() => setImpactText(""), 760);
   }, []);
+
+  const isPlayerTurn = game.currentPlayer === "white";
 
   const legalMoves = useMemo(() => {
     if (game.winner || game.pendingDouble || game.dice.length === 0) {
@@ -270,6 +297,7 @@ export default function Home() {
       return;
     }
     bgmRef.current.volume = bgmVolume;
+    synth.setVolume(bgmVolume);
   }, [bgmVolume]);
 
   useEffect(() => {
@@ -279,11 +307,13 @@ export default function Home() {
     }
     if (!bgmOn) {
       bgm.pause();
+      synth.stopBgm();
       return;
     }
     void bgm.play().catch(() => {
       setBgmOn(false);
     });
+    synth.startBgm();
   }, [bgmOn]);
 
   useEffect(() => {
@@ -311,7 +341,8 @@ export default function Home() {
       return;
     }
     if (game.turnTimeLeft > 0 && game.turnTimeLeft <= 3) {
-      playFx("tick");
+      const tickTimer = setTimeout(() => playFx("tick"), 0);
+      return () => clearTimeout(tickTimer);
     }
   }, [game.winner, game.pendingDouble, game.dice.length, game.turnTimeLeft, playFx]);
 
@@ -379,6 +410,26 @@ export default function Home() {
   }, [playFx]);
 
   useEffect(() => {
+    if (game.winner || game.pendingDouble || game.currentPlayer !== "black") {
+      return;
+    }
+
+    const houseTurnTimer = setTimeout(() => {
+      setSelectedFrom(null);
+      triggerImpact("HOUSE MOVE");
+      playFx("rollThrow");
+      setGame((prev) => {
+        if (prev.winner || prev.pendingDouble || prev.currentPlayer !== "black") {
+          return prev;
+        }
+        return runAutoTurn(prev);
+      });
+    }, 550);
+
+    return () => clearTimeout(houseTurnTimer);
+  }, [game.winner, game.pendingDouble, game.currentPlayer, playFx, triggerImpact]);
+
+  useEffect(() => {
     const timer = setInterval(() => {
       setGame((prev) => {
         if (!prev.pendingDouble || prev.winner) {
@@ -424,10 +475,14 @@ export default function Home() {
     if (!game.winner) {
       return;
     }
-    playFx("win");
-    setTimeout(() => playFx("win"), 120);
+    const winTimerA = setTimeout(() => playFx("win"), 0);
+    const winTimerB = setTimeout(() => playFx("win"), 120);
     const bannerTimer = setTimeout(() => triggerImpact("VICTORY"), 0);
-    return () => clearTimeout(bannerTimer);
+    return () => {
+      clearTimeout(winTimerA);
+      clearTimeout(winTimerB);
+      clearTimeout(bannerTimer);
+    };
   }, [game.winner, playFx, triggerImpact]);
 
   useEffect(() => {
@@ -531,7 +586,7 @@ export default function Home() {
   };
 
   const tryPointClick = (pointIndex: number) => {
-    if (game.winner || game.pendingDouble || game.dice.length === 0) {
+    if (game.winner || game.pendingDouble || game.dice.length === 0 || !isPlayerTurn) {
       return;
     }
 
@@ -561,7 +616,7 @@ export default function Home() {
   };
 
   const tryBarClick = () => {
-    if (game.winner || game.pendingDouble || game.dice.length === 0) {
+    if (game.winner || game.pendingDouble || game.dice.length === 0 || !isPlayerTurn) {
       return;
     }
 
@@ -574,7 +629,7 @@ export default function Home() {
   };
 
   const tryOffClick = () => {
-    if (game.winner || game.pendingDouble || game.dice.length === 0) {
+    if (game.winner || game.pendingDouble || game.dice.length === 0 || !isPlayerTurn) {
       return;
     }
 
@@ -666,7 +721,14 @@ export default function Home() {
     rollTimerRefs.current.push(finishTimer);
   };
 
-  const handleRollDiceClick = () => {
+  const handleRollPointerDown = () => {
+    if (game.winner || game.pendingDouble || game.dice.length > 0 || !isPlayerTurn) return;
+    setIsCharging(true);
+  };
+
+  const handleRollPointerUp = () => {
+    if (!isCharging || !isPlayerTurn) return;
+    setIsCharging(false);
     playFx("rollThrow");
     rollCurrentPlayerDice();
   };
@@ -674,6 +736,9 @@ export default function Home() {
   const offerDouble = () => {
     setGame((prev) => {
       if (prev.winner || prev.pendingDouble || prev.dice.length > 0) {
+        return prev;
+      }
+      if (prev.currentPlayer !== "white") {
         return prev;
       }
       if (prev.cubeMultiplier >= CUBE_MAX) {
@@ -741,7 +806,11 @@ export default function Home() {
   const shownDice = rolling ? displayDice : game.lastRoll ?? displayDice;
 
   return (
-    <div className="page-wrap">
+    <div className={`page-wrap ${shakeType !== "none" ? `shaking-${shakeType}` : ""}`}>
+      {/* Dopamine Flash Overlay */}
+      {shakeType !== "none" && (
+        <div className={`dopamine-flash flash-${shakeType}`} />
+      )}
       <div className="bauhaus-shape circle" />
       <div className="bauhaus-shape square" />
       <div className="bauhaus-shape bar" />
@@ -765,7 +834,7 @@ export default function Home() {
               <span>Cube</span>
               <strong>x{game.cubeMultiplier}</strong>
             </div>
-            <div className={`dice-stage ${rolling ? "rolling" : ""}`}>
+            <div className={`dice-stage ${rolling ? "rolling" : ""} ${isCharging ? "charging" : ""}`}>
               <span>Dice</span>
               <div className="dice-pair">
                 <div className={`slot-reel ${rolling ? "rolling" : ""} ${reelLock[0] ? "locked" : ""}`}>
@@ -793,7 +862,8 @@ export default function Home() {
           <aside className="control-panel">
             <div className="panel-box">
               <h2>Match</h2>
-              <p>Current Turn: {game.currentPlayer.toUpperCase()}</p>
+              <p>You (White) vs House AI (Black)</p>
+              <p>Current Turn: {isPlayerTurn ? "YOU" : "HOUSE"}</p>
               <p>
                 Last Roll: {game.lastRoll ? `${game.lastRoll[0]}-${game.lastRoll[1]}` : "-"}
               </p>
@@ -860,21 +930,25 @@ export default function Home() {
               <h2>Actions</h2>
               <button
                 type="button"
-                className={leverPulled ? "lever-pulled" : ""}
-                onClick={handleRollDiceClick}
-                disabled={Boolean(game.winner || game.pendingDouble || game.dice.length > 0)}
+                className={`${leverPulled ? "lever-pulled" : ""} ${isCharging ? "charging" : ""}`}
+                onPointerDown={handleRollPointerDown}
+                onPointerUp={handleRollPointerUp}
+                onPointerOut={handleRollPointerUp}
+                onContextMenu={(e) => e.preventDefault()}
+                disabled={Boolean(game.winner || game.pendingDouble || game.dice.length > 0 || !isPlayerTurn)}
               >
-                {rolling ? "ROLLING..." : "Roll Dice"}
+                {rolling ? "ROLLING..." : isCharging ? "CHARGING !!" : "Hold to Roll"}
               </button>
               <button
                 type="button"
                 onClick={offerDouble}
                 disabled={Boolean(
                   game.winner ||
-                    game.pendingDouble ||
-                    game.dice.length > 0 ||
-                    game.cubeMultiplier >= CUBE_MAX ||
-                    (game.cubeOwner !== "center" && game.cubeOwner !== game.currentPlayer),
+                  game.pendingDouble ||
+                  game.dice.length > 0 ||
+                  !isPlayerTurn ||
+                  game.cubeMultiplier >= CUBE_MAX ||
+                  (game.cubeOwner !== "center" && game.cubeOwner !== game.currentPlayer),
                 )}
               >
                 Offer Double
@@ -885,12 +959,18 @@ export default function Home() {
                   <p>
                     {game.pendingDouble.from.toUpperCase()} offered double (auto-accept in {game.pendingDouble.timeLeft}s)
                   </p>
-                  <button type="button" onClick={acceptDouble}>
-                    Accept
-                  </button>
-                  <button type="button" onClick={dropDouble}>
-                    Drop
-                  </button>
+                  {game.pendingDouble.from === "black" ? (
+                    <>
+                      <button type="button" onClick={acceptDouble}>
+                        Accept
+                      </button>
+                      <button type="button" onClick={dropDouble}>
+                        Drop
+                      </button>
+                    </>
+                  ) : (
+                    <p>House is deciding...</p>
+                  )}
                 </div>
               )}
 
